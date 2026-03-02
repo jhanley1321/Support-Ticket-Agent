@@ -14,6 +14,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.chat_models import init_chat_model
 from langchain_ollama import ChatOllama
 
+#-------------
+from cli import run_cli
+
 
 # ----------------------------
 # Types / Schemas
@@ -277,45 +280,45 @@ class SupportAgentGraph:
         return gb.compile()
 
 
-# ----------------------------
-# CLI
-# ----------------------------
+# # ----------------------------
+# # CLI
+# # ----------------------------
 
-def run_cli(graph):
-    state: State = {
-        "messages": [],
-        "intent": None,
-        "schema": None,
-        "router_confidence": None,
-        "needs_review": False,
-        "result": None,
-        "correction": None,
-        "retries": 0,
-        "next": None,
-    }
+# def run_cli(graph):
+#     state: State = {
+#         "messages": [],
+#         "intent": None,
+#         "schema": None,
+#         "router_confidence": None,
+#         "needs_review": False,
+#         "result": None,
+#         "correction": None,
+#         "retries": 0,
+#         "next": None,
+#     }
 
-    while True:
-        user_input = input("Message: ").strip()
-        if user_input.lower() == "exit":
-            print("Bye")
-            break
+#     while True:
+#         user_input = input("Message: ").strip()
+#         if user_input.lower() == "exit":
+#             print("Bye")
+#             break
 
-        # Per-turn control fields.
-        state["retries"] = 0
-        state["next"] = None
-        state["correction"] = None
+#         # Per-turn control fields.
+#         state["retries"] = 0
+#         state["next"] = None
+#         state["correction"] = None
 
-        state["messages"] = state.get("messages", []) + [{"role": "user", "content": user_input}]
-        state = graph.invoke(state)
+#         state["messages"] = state.get("messages", []) + [{"role": "user", "content": user_input}]
+#         state = graph.invoke(state)
 
-        print("\n--- ROUTE ---")
-        print(
-            f"intent={state.get('intent')} schema={state.get('schema')} "
-            f"router_conf={state.get('router_confidence')} needs_review={state.get('needs_review')}"
-        )
-        print("--- RESULT ---")
-        print(json.dumps(state.get("result"), indent=2))
-        print("")
+#         print("\n--- ROUTE ---")
+#         print(
+#             f"intent={state.get('intent')} schema={state.get('schema')} "
+#             f"router_conf={state.get('router_confidence')} needs_review={state.get('needs_review')}"
+#         )
+#         print("--- RESULT ---")
+#         print(json.dumps(state.get("result"), indent=2))
+#         print("")
 
 
 if __name__ == "__main__":
