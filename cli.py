@@ -1,29 +1,21 @@
 import json
+from typing import Callable, Dict, Any
 
 
-def run_cli(graph):
-    state = {
-        "messages": [],
-        "intent": None,
-        "schema": None,
-        "router_confidence": None,
-        "needs_review": False,
-        "result": None,
-        "correction": None,
-        "retries": 0,
-        "next": None,
-    }
+def run_cli(
+    graph,
+    make_state: Callable[[], Dict[str, Any]],
+    reset_turn_fields: Callable[[Dict[str, Any]], None],
+) -> None:
+    state = make_state()
 
     while True:
         user_input = input("Message: ").strip()
         if user_input.lower() == "exit":
             print("Bye")
-            break
+            return
 
-        # Per-turn control fields.
-        state["retries"] = 0
-        state["next"] = None
-        state["correction"] = None
+        reset_turn_fields(state)
 
         state["messages"] = state.get("messages", []) + [{"role": "user", "content": user_input}]
         state = graph.invoke(state)
@@ -35,4 +27,3 @@ def run_cli(graph):
         )
         print("--- RESULT ---")
         print(json.dumps(state.get("result"), indent=2))
-        print("")

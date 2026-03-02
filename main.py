@@ -16,6 +16,7 @@ from langchain_ollama import ChatOllama
 
 #-------------
 from cli import run_cli
+from state_store import make_initial_state, reset_turn_fields 
 
 
 # ----------------------------
@@ -330,4 +331,9 @@ if __name__ == "__main__":
 
     llm = build_llm(MODEL, PROVIDER)
     app = SupportAgentGraph(llm, debug=DEBUG)
-    run_cli(app.graph)
+
+    run_cli(
+        app.graph,
+        make_state=make_initial_state,
+        reset_turn_fields=reset_turn_fields,
+    )
