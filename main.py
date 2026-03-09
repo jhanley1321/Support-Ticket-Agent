@@ -1,95 +1,30 @@
 from __future__ import annotations
 
-import json
-from typing import Annotated, Literal, Optional, Type
-from typing_extensions import TypedDict
+from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.chat_models import init_chat_model
 from langchain_ollama import ChatOllama
 
-#-------------
 from cli import run_cli
-from state_store import make_initial_state, reset_turn_fields 
+from state_store import make_initial_state, reset_turn_fields
 from prompts import ROUTER_SYSTEM_PROMPT
-from verifier_agent import VerifierAgent
 
+from agents.verifier_agent import VerifierAgent
+from agents.worker_agent import WorkerAgent
 
-# ----------------------------
-# Types / Schemas
-# ----------------------------
-
-Intent = Literal["classify_ticket", "summarize", "extract_fields", "unknown"]
-SchemaName = Literal["TicketResult", "SummaryResult", "ExtractedFields", "UnknownResult"]
-
-
-class IntentDecision(BaseModel):
-    intent: Intent
-    # Don't name this field "schema" (it clashes with BaseModel.schema()).
-    # We alias it to "schema" so the structured output still uses that key.
-    schema_name: SchemaName = Field(..., alias="schema")
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    needs_review: bool = False
-
-    # Allows either "schema" (alias) or "schema_name" to populate this field.
-    model_config = {"populate_by_name": True}
-
-
-class TicketResult(BaseModel):
-    category: str
-    priority: Literal["low", "medium", "high", "urgent"]
-    summary: str
-    action_items: list[str] = Field(default_factory=list)
-    confidence: float = Field(..., ge=0.0, le=1.0)
-
-
-class SummaryResult(BaseModel):
-    summary: str
-    action_items: list[str] = Field(default_factory=list)
-    confidence: float = Field(..., ge=0.0, le=1.0)
-
-
-class ExtractedFields(BaseModel):
-    requester: Optional[str] = None
-    product: Optional[str] = None
-    issue: Optional[str] = None
-    urgency: Optional[str] = None
-    confidence: float = Field(..., ge=0.0, le=1.0)
-
-
-class UnknownResult(BaseModel):
-    response: str
-    confidence: float = Field(..., ge=0.0, le=1.0)
-
-
-# ----------------------------
-# Graph state
-# ----------------------------
-
-class State(TypedDict):
-    messages: Annotated[list, add_messages]
-
-    intent: Optional[Intent]
-    schema: Optional[SchemaName]
-    router_confidence: Optional[float]
-    needs_review: Optional[bool]
-
-    result: Optional[dict]
-
-    correction: Optional[str]
-    retries: int
-    next: Optional[str]
-
-
-def _content(msg) -> str:
-    # LangGraph message lists can contain dicts or LangChain message objects.
-    return msg.get("content") if isinstance(msg, dict) else msg.content
+from ticket_models import (
+    IntentDecision,
+    TicketResult,
+    SummaryResult,
+    ExtractedFields,
+    UnknownResult,
+    State,
+    content_of,
+)
 
 
 # ----------------------------
@@ -110,12 +45,6 @@ class DebugLogger:
 # ----------------------------
 
 def build_llm(model: str, provider: Optional[str] = None):
-    """
-    Supports:
-      - model="anthropic:..." (provider inferred from prefix)
-      - model="llama3.2", provider="ollama"
-      - model="gpt-4.1", provider="openai" (etc.)
-    """
     if provider is None and ":" in model:
         prefix, rest = model.split(":", 1)
         if prefix == "ollama":
@@ -138,7 +67,7 @@ def build_llm(model: str, provider: Optional[str] = None):
 
 
 # ----------------------------
-# Nodes
+# Router node (still in main for now)
 # ----------------------------
 
 class IntentRouterAgent:
@@ -149,64 +78,18 @@ class IntentRouterAgent:
 
     def __call__(self, state: State) -> dict:
         self.log.log("router: deciding intent/schema")
-        user_text = _content(state["messages"][-1])
+        user_text = content_of(state["messages"][-1])
 
-        system = SystemMessage(content=ROUTER_SYSTEM_PROMPT)
-
-        decision: IntentDecision = self.structured.invoke([system, HumanMessage(content=user_text)])
+        decision: IntentDecision = self.structured.invoke(
+            [SystemMessage(content=ROUTER_SYSTEM_PROMPT), HumanMessage(content=user_text)]
+        )
 
         return {
             "intent": decision.intent,
-            "schema": decision.schema_name,  # IMPORTANT: do not use decision.schema (method)
+            "schema": decision.schema_name,
             "router_confidence": decision.confidence,
             "needs_review": decision.needs_review,
         }
-
-
-class WorkerAgent:
-    def __init__(self, llm, logger: DebugLogger):
-        self.llm = llm
-        self.log = logger
-
-    def _schema_model(self, schema: SchemaName | str) -> Type[BaseModel]:
-        mapping: dict[str, Type[BaseModel]] = {
-            "TicketResult": TicketResult,
-            "SummaryResult": SummaryResult,
-            "ExtractedFields": ExtractedFields,
-            "UnknownResult": UnknownResult,
-        }
-        return mapping.get(str(schema), UnknownResult)
-
-    def __call__(self, state: State) -> dict:
-        self.log.log("worker: producing structured output")
-        user_text = _content(state["messages"][-1])
-
-        intent = state.get("intent") or "unknown"
-        schema = state.get("schema") or "UnknownResult"
-        correction = state.get("correction")
-
-        schema_model = self._schema_model(schema)
-        structured = self.llm.with_structured_output(schema_model)
-
-        system_text = (
-            f"You are the Worker/Executor.\n"
-            f"Intent: {intent}\n"
-            f"Fill the {schema} schema.\n"
-            f"Confidence must be 0..1.\n"
-        )
-        if correction:
-            system_text += f"\nFix this and retry: {correction}\n"
-
-        result_obj: BaseModel = structured.invoke(
-            [SystemMessage(content=system_text), HumanMessage(content=user_text)]
-        )
-
-        return {
-            "result": result_obj.model_dump(),
-            "correction": None,
-        }
-
-
 
 
 # ----------------------------
@@ -218,8 +101,22 @@ class SupportAgentGraph:
         logger = DebugLogger(enabled=debug)
 
         self.router = IntentRouterAgent(llm, logger)
-        self.worker = WorkerAgent(llm, logger)
-        self.verifier = VerifierAgent(log=logger.log) 
+
+        schema_models = {
+            "TicketResult": TicketResult,
+            "SummaryResult": SummaryResult,
+            "ExtractedFields": ExtractedFields,
+            "UnknownResult": UnknownResult,
+        }
+
+        self.worker = WorkerAgent(
+            llm,
+            log=logger.log,
+            schema_models=schema_models,
+            content_of=content_of,
+        )
+
+        self.verifier = VerifierAgent(log=logger.log)
 
         self.graph = self._build()
 
@@ -241,8 +138,6 @@ class SupportAgentGraph:
         )
 
         return gb.compile()
-
-
 
 
 if __name__ == "__main__":
